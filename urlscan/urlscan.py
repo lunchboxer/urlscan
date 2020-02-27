@@ -256,9 +256,13 @@ class HTMLChunker(HTMLParser):
 
 URLINTERNALPATTERN = r'[{}()@\w/\\\-%?!&.=:;+,#~]'
 URLTRAILINGPATTERN = r'[{}(@\w/\-%&=+#]'
+URLINSIDE = URLINTERNALPATTERN + r'*' + URLTRAILINGPATTERN
+# Used to guess that blah.blah.blah.TLD is a URL.
+
 HTTPURLPATTERN = (r'(?:(https?|file|ftps?)://' + URLINTERNALPATTERN +
                   r'*' + URLTRAILINGPATTERN + r')')
-# Used to guess that blah.blah.blah.TLD is a URL.
+HTTPURLPATTERN_NOIMAGE = (r'(https?|file|ftps?):\/\/(?!' + URLINSIDE +
+                  r'(?:\.jpg|\.png|\.gif))' + URLINSIDE)
 
 
 def load_tlds():
@@ -276,10 +280,16 @@ def load_tlds():
 TLDS = load_tlds()
 GUESSEDURLPATTERN = (r'(?:[\w\-%]+(?:\.[\w\-%]+)*\.(?:' +
                      '|'.join(TLDS) + ')$)')
+
 URLRE = re.compile(r'(?:<(?:URL:)?)?(' + HTTPURLPATTERN + '|' +
                    GUESSEDURLPATTERN +
                    r'|(?P<email>(mailto:)?[\w\-.]+@[\w\-.]*[\w\-]))>?',
                    flags=re.U)
+URLRE_NOIMAGE = re.compile(r'(?:<(?:URL:)?)?(' + HTTPURLPATTERN_NOIMAGE + '|' +
+                   GUESSEDURLPATTERN +
+                   r'|(?P<email>(mailto:)?[\w\-.]+@[\w\-.]*[\w\-]))>?',
+                   flags=re.U)
+
 
 # Poor man's test cases.
 assert URLRE.match('<URL:http://linuxtoday.com>')
@@ -302,7 +312,27 @@ assert not URLRE.match('example..biz')
 assert not URLRE.match('blah.baz.obviouslynotarealdomain')
 
 
-def parse_text_urls(mesg):
+assert URLRE_NOIMAGE.match('<URL:http://linuxtoday.com>')
+assert URLRE_NOIMAGE.match('http://linuxtoday.com')
+assert re.compile(GUESSEDURLPATTERN).match('example.biz')
+assert URLRE_NOIMAGE.match('example.biz')
+assert URLRE_NOIMAGE.match('linuxtoday.com')
+assert URLRE_NOIMAGE.match('master.wizard.edu')
+assert URLRE_NOIMAGE.match('blah.bar.info')
+assert URLRE_NOIMAGE.match('goodpr.org')
+assert URLRE_NOIMAGE.match('http://github.com/firecat53/ürlscan')
+assert URLRE_NOIMAGE.match('https://Schöne_Grüße.es/test')
+assert URLRE_NOIMAGE.match('http://www.pantherhouse.com/newshelton/my-wife-thinks-i’m-a-swan/')
+assert not URLRE_NOIMAGE.match('blah..org')
+assert URLRE_NOIMAGE.match('http://www.testurl.zw')
+assert URLRE_NOIMAGE.match('http://www.testurl.smile')
+assert URLRE_NOIMAGE.match('testurl.smile.smile')
+assert URLRE_NOIMAGE.match('testurl.biz.smile.zw')
+assert not URLRE_NOIMAGE.match('example..biz')
+assert not URLRE_NOIMAGE.match('blah.baz.obviouslynotarealdomain')
+
+
+def parse_text_urls(mesg, show_image_url=True):
     """Parse a block of text, splitting it into its url and non-url
     components."""
 
@@ -310,7 +340,12 @@ def parse_text_urls(mesg):
 
     loc = 0
 
-    for match in URLRE.finditer(mesg):
+    if show_image_url is True:
+        url_regex = URLRE
+    else:
+        url_regex = URLRE_NOIMAGE
+
+    for match in url_regex.finditer(mesg):
         if loc < match.start():
             rval.append(Chunk(mesg[loc:match.start()], None))
         # Turn email addresses into mailto: links
@@ -393,7 +428,7 @@ def extract_with_context(lst, pred, before_context, after_context):
 NLRE = re.compile('\r\n|\n|\r')
 
 
-def extracturls(mesg):
+def extracturls(mesg, show_image_url=True):
     """Given a text message, extract all the URLs found in the message, along
     with their surrounding context.  The output is a list of sequences of Chunk
     objects, corresponding to the contextual regions extracted from the string.
@@ -420,7 +455,7 @@ def extracturls(mesg):
                                 1, 1)
 
 
-def extracthtmlurls(mesg):
+def extracthtmlurls(mesg, show_image_url=True):
     """Extract URLs with context from html type message. Similar to extracturls.
 
     """
@@ -435,6 +470,12 @@ def extracthtmlurls(mesg):
             if chnk.url is not None:
                 return True
         return False
+
+    if show_image_url is False:
+        chunk.rval = [[
+            chunk_obj for chunk_obj in lst
+            if chunk_obj.url is not None and URLRE_NOIMAGE.match(chunk_obj.url) is not None
+        ] for lst in chunk.rval]
 
     return extract_with_context(chunk.rval, somechunkisurl, 1, 1)
 
@@ -473,7 +514,7 @@ def decode_msg(msg, enc='utf-8'):
     return decode_bytes(res, enc)
 
 
-def msgurls(msg, urlidx=1):
+def msgurls(msg, urlidx=1, show_image_url=True):
     """Main entry function for urlscan.py
 
     """
@@ -484,16 +525,16 @@ def msgurls(msg, urlidx=1):
     enc = get_charset(msg)
     if msg.is_multipart():
         for part in msg.get_payload():
-            for chunk in msgurls(part, urlidx):
+            for chunk in msgurls(part, urlidx, show_image_url):
                 urlidx += 1
                 yield chunk
     elif msg.get_content_type() == "text/plain":
         decoded = decode_msg(msg, enc)
-        for chunk in extracturls(decoded):
+        for chunk in extracturls(decoded, show_image_url):
             urlidx += 1
             yield chunk
     elif msg.get_content_type() == "text/html":
         decoded = decode_msg(msg, enc)
-        for chunk in extracthtmlurls(decoded):
+        for chunk in extracthtmlurls(decoded, show_image_url):
             urlidx += 1
             yield chunk
